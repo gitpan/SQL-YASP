@@ -1,4 +1,4 @@
-SQL/YASP version 0.10
+SQL/YASP version 0.11
 ========================
 
 NAME
@@ -1237,4 +1237,8 @@ AUTHOR
 VERSION
     Version 0.10 June 12, 2003
         Initial release
+
+    Version 0.11 June 28, 2003
+        Removed Debug::ShowStuff from module, which was only there for (as
+        you might expect) debugging.
 

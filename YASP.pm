@@ -1,7 +1,7 @@
 package SQL::YASP;
 use Carp 'croak';
 use strict;
-use Debug::ShowStuff ':all';  # TESTING
+# use Debug::ShowStuff ':all';  # TESTING
 use Tie::IxHash;
 use Exporter;
 
@@ -9,7 +9,7 @@ use Exporter;
 
 # globals
 use vars qw[@ISA @EXPORT_OK %EXPORT_TAGS %StdDelimiters $defparser $VERSION $nullchar $wineof $err $errstr];
-$VERSION = '0.10';
+$VERSION = '0.11';
 
 # export
 @ISA = 'Exporter';
@@ -82,31 +82,31 @@ sub new {
 # OVERRIDE ME
 # 
 sub build_tree {
-	my ($self, $stmt, @els) = @_;
+	my ($self, $stmt, @tokens) = @_;
 	my ($cmd);
 	
 	# always set $stmt->{'command'}
-	$cmd = $stmt->{'command'} = shift @els;
+	$cmd = $stmt->{'command'} = shift @tokens;
 	
 	# create
 	if ($cmd eq 'create')
-		{$self->tree_create($stmt, @els)}
+		{$self->tree_create($stmt, @tokens) or return undef}
 	
 	# select
 	elsif ($cmd eq 'select')
-		{$self->tree_select($stmt, @els)}
+		{$self->tree_select($stmt, @tokens) or return undef}
 	
 	# insert
 	elsif ($cmd eq 'insert')
-		{$self->tree_insert($stmt, @els)}
+		{$self->tree_insert($stmt, @tokens) or return undef}
 	
 	# update
 	elsif ($cmd eq 'update')
-		{$self->tree_update($stmt, @els)}
+		{$self->tree_update($stmt, @tokens) or return undef}
 	
 	# delete
 	elsif ($cmd eq 'delete')
-		{$self->tree_delete($stmt, @els)}
+		{$self->tree_delete($stmt, @tokens) or return undef}
 	
 	# else don't recognize command
 	else
@@ -131,11 +131,10 @@ sub tree_create {
 	
 	# create table
 	if ($stmt->{'create_type'} eq 'table')
-		{$self->tree_create_table($stmt, @els)}
+		{return $self->tree_create_table($stmt, @els)}
 	
 	# else don't know this type of object
-	else
-		{croak "do not know how to create this type of object: $self->{'create_type'}"}
+	croak "do not know how to create this type of object: $self->{'create_type'}";
 }
 # 
 # tree_create
@@ -198,6 +197,8 @@ sub tree_create_table {
 		# store in fields hash
 		$fields->{$field_name} = $field;
 	}
+	
+	return 1;
 }
 # 
 # tree_create_table
@@ -213,7 +214,8 @@ sub tree_select {
 	my ($self, $stmt, @els) = @_;
 	my ($unset);
 	
-	$unset = $self->get_sections($stmt, \@els,
+	$unset = $self->get_sections(
+		$stmt, \@els,
 		'from'      =>  SECTION_TABLE_LIST,
 		'order by'  =>  SECTION_COMMA_SPLIT,
 		'where'     =>  SECTION_EXPRESSION,
@@ -266,7 +268,8 @@ sub tree_insert {
 	# into
 	if ($unset->{'into'}) {
 		$stmt->{'table_name'} = shift @{$unset->{'into'}};
-		get_set_fields($stmt, $unset->{'into'}, $unset);
+		get_set_fields($stmt, $unset->{'into'}, $unset)
+			or return undef;
 	}
 }
 # 
@@ -293,7 +296,8 @@ sub tree_update {
 	$stmt->{'table_name'} = shift @{$opener};
 	
 	# set "set" clause
-	get_set_fields($stmt, $opener, $unset);
+	get_set_fields($stmt, $opener, $unset)
+		or return undef;
 
 }
 # 
@@ -307,12 +311,25 @@ sub tree_update {
 sub get_set_fields {
 	my ($stmt, $fieldlist, $unset) = @_;
 	
-	# if a SET clause wasn't sent, and a VALUES clause was set "set"
-	# using values
+	# if a SET clause wasn't sent, and a VALUES clause was,
+	# set "set" using values
 	if ( (! $stmt->{'set'}) && $unset->{'values'} ) {
-		my (%set);
+		my (%set, @fields, @exprs, $i);
 		
-		@set{map {$_=$_->[0]} comma_split([deref_args($fieldlist)])} = comma_split([deref_args($unset->{'values'})]);
+		@fields = comma_split([deref_args($fieldlist)]);
+		@exprs  = comma_split( [deref_args($unset->{'values'})] );
+		$i = 0;
+
+		if (@fields != @exprs) {
+			SQL::YASP::Expr::set_err('invalid syntax: field list and expression list must have same number of elements');
+			return undef;
+		}
+		
+		while ($i <= $#fields) {
+			$set{$fields[$i]->[0]} = SQL::YASP::Expr->new($stmt, $exprs[$i]);
+			$i++;
+		}
+		
 		$stmt->{'set'} = \%set;
 	}
 }
@@ -328,14 +345,32 @@ sub tree_select_fields {
 	my ($self, $stmt, $clause) = @_;
 	my $cc = ref($self) . '::Expr';  # clause class
 	my $rv = get_ixhash();
-
+	
 	# get field list
 	foreach my $fielddef (arr_split([','], $clause)) {
 		my @def = @$fielddef;
 		
 		# single field
-		if (@def == 1)
-			{$rv->{$def[0]} = $cc->new($stmt, @def)}
+		if (@def == 1){
+			# TODO: need to address possibility of format tablename.*
+			# For now we assume that the select is from just one table.
+			# 
+			# If that single field is '*', and if we got a table definition hash.
+			# 
+			if ( ($def[0] eq '*') && $stmt->{'table_definitions'} ) {
+				# Get the name of the first table.  See note above
+				# for why we do this little cop-out.
+				my $tablename = $stmt->{'from'}->{(keys(%{$stmt->{'from'}}))[0]};
+				my $col_defs = $stmt->{'table_definitions'}->{$tablename}->{'col_defs'};
+				
+				foreach my $fieldname (keys %{$col_defs})
+					{$rv->{$fieldname} = $cc->new($stmt, $fieldname)}
+			}
+			
+			# else it's just the name of a table
+			else
+				{$rv->{$def[0]} = $cc->new($stmt, @def)}
+		}
 		
 		# else if in format "expression as fieldname"
 		elsif ( (@def >= 3) && ($def[-2] eq 'as') ) {
@@ -447,8 +482,8 @@ sub after_new {
 # parse
 # 
 sub parse {
-	my ($self, $sql) = @_;	
-	my ($rv, @els, $carry);
+	my ($self, $sql, %opts) = @_;	
+	my ($rv, @tokens, $carry);
 	
 	# get parser if one wasn't passed
 	unless (ref $self) {
@@ -468,15 +503,16 @@ sub parse {
 	
 	# tokenize statement
 	$carry = {placeholders=>[]};
-	@els = $self->sql_split($sql, $carry);
+	@tokens = $self->sql_split($sql, $carry);
 	
 	# get the command for this statement
 	$rv->{'placeholders'} = $carry->{'placeholders'};
 	$rv->{'placeholder_count'} = @{$carry->{'placeholders'}};
 	$rv->{'parser'} = $self;
+	$rv->{'table_definitions'} = $opts{'table_definitions'};
 	
 	# build statement tree
-	$self->build_tree($rv, @els);
+	$self->build_tree($rv, @tokens) or return undef;
 	
 	# return statement object
 	return $rv;
@@ -507,7 +543,7 @@ sub get_sections {
 		
 		# field set list
 		if ($opts{$sname} == SECTION_FIELD_SET_LIST)
-			{$stmt->{$sname} = field_set_list($clause)}
+			{$stmt->{$sname} = field_set_list($stmt, $clause)}
 		
 		# single word
 		elsif ($opts{$sname} == SECTION_SINGLE_WORD)
@@ -568,12 +604,13 @@ sub get_sections {
 # field_set_list
 # 
 sub field_set_list {
-	my ($fullset) = @_;
+	my ($stmt, $allsets) = @_;
 	my $rv = {};
 	
-	foreach my $set (comma_split($fullset)) {
+	foreach my $set (comma_split($allsets)) {
 		my ($name, $expr) = arr_split(['='], $set, max=>2);
-		$rv->{$name->[0]} = $expr;
+		# $rv->{$name->[0]} = $expr;
+		$rv->{$name->[0]} = SQL::YASP::Expr->new($stmt, $expr);
 	}
 	
 	return $rv;
@@ -1001,8 +1038,14 @@ sub restring {
 	
 	# loop through arguments
 	foreach my $arg (@args) {
-		if (ref $arg)
-			{push @rv, '(', restring($arg), ')'}
+		if (ref $arg) {
+			# if the arg is a placeholder
+			if (UNIVERSAL::isa($arg, 'HASH') && $arg->{'placeholder'})
+				{push @rv, ' ?'}
+			else
+				{push @rv, '(', restring($arg), ')'}
+		}
+		
 		else {
 			if (@rv && ($arg ne ',') )
 				{push @rv, ' '}
@@ -1087,6 +1130,17 @@ sub select_fields {
 #---------------------------------------------------------------------------------------
 
 
+#---------------------------------------------------------------------------------------
+# DESTROY
+# 
+# TESTING
+# 
+# DESTROY {print "destroying SQL::YASP::Statement\n"}
+# 
+# DESTROY
+#---------------------------------------------------------------------------------------
+
+
 # 
 # SQL::YASP::Statement
 #########################################################################################
@@ -1100,7 +1154,7 @@ package SQL::YASP::Expr;
 use strict;
 use Carp 'croak', 'confess';
 use vars qw[@dbin %dfuncs];
-use Debug::ShowStuff ':all';  # TESTING
+# use Debug::ShowStuff ':all';  # TESTING
 
 # operator precedence levels
 use constant OP_BETWEEN => SQL::YASP::OP_BETWEEN;
@@ -1206,12 +1260,12 @@ sub evalexpr {
 	@args = deref_args(@args);
 	
 	# get stuff from options
-	$parser = $opts->{'exprob'}->{'parser'};
-	$typefix = $parser->{'type_fix'};
-	$lukas = $parser->{'lukas'};
-	$funcs = $parser->{'functions'};
-	%allops = %{$parser->{'allops'}};
-	@oplevels = @{$parser->{'ops'}};
+	$parser    =  $opts->{'exprob'}->{'parser'};
+	$typefix   =  $parser->{'type_fix'};
+	$lukas     =  $parser->{'lukas'};
+	$funcs     =  $parser->{'functions'};
+	%allops    =  %{$parser->{'allops'}};
+	@oplevels  =  @{$parser->{'ops'}};
 	
 	
 	
@@ -1234,11 +1288,18 @@ sub evalexpr {
 			# if it's a hash
 			if (UNIVERSAL::isa($arg, 'HASH')) {
 				# placeholder
-				if ($arg->{'placeholder'} && $opts->{'params'} ) {
-					# make sure we have a placeholder for this index
-					if ($arg->{'index'} > $#{$opts->{'params'}})
-						{croak 'More placeholders than params'}
-					$rv = $opts->{'params'}->[$arg->{'index'}];
+				if ($arg->{'placeholder'}) {
+					if ( $opts->{'params'} && @{$opts->{'params'}} ) {
+						# make sure we have a placeholder for this index
+						if ($arg->{'index'} > $#{$opts->{'params'}})
+							{set_err('More placeholders than params')}
+						
+						$rv = $opts->{'params'}->[$arg->{'index'}];
+					}
+
+					else {
+						set_err('Do not have any params to match placeholders');
+					}
 				}
 				
 				# else just return it
@@ -1294,7 +1355,7 @@ sub evalexpr {
 				# if the current argument is a binary operator in this precedence level
 				if ( (! ref $carg) && $bg->{$carg} ) {
 					
-					# KLUDGE: if this operators is ALSO a function, and if the next
+					# KLUDGE: if this operator is ALSO a function, and if the next
 					# token back is an operator, then skip this operator
 					# typical scenerio where this kludge comes into play:
 					#    rank/-2
@@ -2373,7 +2434,8 @@ Each field definition (i.e. each element in the fields hash) has two elements.
 
 =item where
 
-An expression object.  See the documentation for expression objects objects below.
+An expression object.  See the documentation for expression objects
+objects below.
 
 =item from
 
@@ -2403,7 +2465,8 @@ See the documentation for expression objects below.
 
 =head2 DELETE
 
-Statement objects for the DELETE command have C<where> and C<from> properties like SELECT statements.
+Statement objects for the DELETE command have C<where> and C<from>
+properties like SELECT statements.
 
 =head2 UPDATE
 
@@ -2491,8 +2554,8 @@ modifying the operators and functions, and overriding object methods.
 Except for overriding methods, all of these options and properties should be
 set in the C<new> function.  Any of the options that are not explicitly set
 in C<new> are set in C<after_new>, which should I<always> be called at the
-end of C<new>.  So, for example, suppose you wanted to remove Perl-style regexes
-and /* style comments.  Your C<new> function could look like this:
+end of C<new>.  So, for example, suppose you wanted to remove Perl-style
+regexes and /* style comments.  Your C<new> function could look like this:
 
     sub new {
         my ($class) = @_;
@@ -2512,8 +2575,8 @@ and /* style comments.  Your C<new> function could look like this:
 
 =head2 Parsing Options
 
-The following options can be set in the C<new> function.  See their documentation for specifics
-about what each property does.
+The following options can be set in the C<new> function.  See their
+documentation for specifics about what each property does.
 
     !_is_not
     backslash_escape
@@ -2527,11 +2590,12 @@ about what each property does.
 
 =head2 DEFINING SQL OPERATORS
 
-SQL operators are stored as a set sub references in the parser object.  The parser's C<ops> property
-is an array.  Each element of the array is a hash, and each element of the hash is a hash of information
-about a specific operator.  Was that a little confusing?  Here's an example.  Suppose we only wanted 
-the parser to recognize four operators:  =, >, *, and +.  We would set the C<ops> property in 
-C<new> like this:
+SQL operators are stored as a set sub references in the parser object.  The
+parser's C<ops> property is an array.  Each element of the array is a hash,
+and each element of the hash is a hash of information about a specific
+operator.  Was that a little confusing?  Here's an example.  Suppose we only
+wanted the parser to recognize four operators:  =, >, *, and +.  We would set
+the C<ops> property in C<new> like this:
 
     sub new {
         my ($class) = @_;
@@ -2610,10 +2674,10 @@ After blessing the object, the function sets its C<ops>
 property to the default YASP operators using the SQL::YASP::default_ops()
 function, which returns an anonymous array of operator definitions.  Next,
 it removes the C<||> definition from the C<OP_MISC> level of operators.
-There are six operator precedence levels in the default definitions: C<OP_BETWEEN>,
-C<OP_LOGICAL>, C<OP_ADD>, C<OP_MULT>, C<OP_EXP>, and C<OP_MISC>.  The sub then redefines
-C<||> into the OP_LOGICAL level, setting its definition to the same as the
-C<or> operator.
+There are six operator precedence levels in the default definitions:
+C<OP_BETWEEN>, C<OP_LOGICAL>, C<OP_ADD>, C<OP_MULT>, C<OP_EXP>, and
+C<OP_MISC>.  The sub then redefines C<||> into the OP_LOGICAL level, setting
+its definition to the same as the C<or> operator.
 
 Turning our attention back to the other properties of an operator definition,
 the other property is C<args>, which indicates what kind of arguments the sub
@@ -3474,6 +3538,11 @@ F<miko@idocs.com>
 =item Version 0.10    June 12, 2003
 
 Initial release
+
+=item Version 0.11    June 28, 2003
+
+Removed Debug::ShowStuff from module, which was only
+there for (as you might expect) debugging.
 
 =back
 
