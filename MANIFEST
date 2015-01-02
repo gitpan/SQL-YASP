@@ -1,5 +1,10 @@
-YASP.pm
-Makefile.PL
 MANIFEST
+Changes
+META.yml
+Makefile.PL
 README
-test.pl
+Build.PL
+LICENSE
+t/test.t
+lib/SQL/YASP.pod
+lib/SQL/YASP.pm

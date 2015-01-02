@@ -1,15 +1,18 @@
 package SQL::YASP;
 use Carp 'croak';
 use strict;
-# use Debug::ShowStuff ':all';  # TESTING
 use Tie::IxHash;
 use Exporter;
+
+# debug tools
+# use Debug::ShowStuff ':all';
+# use Debug::ShowStuff::ShowVar;
 
 # documentation at end of file
 
 # globals
 use vars qw[@ISA @EXPORT_OK %EXPORT_TAGS %StdDelimiters $defparser $VERSION $nullchar $wineof $err $errstr];
-$VERSION = '0.11';
+$VERSION = '0.12';
 
 # export
 @ISA = 'Exporter';
@@ -31,7 +34,13 @@ use constant SECTION_OBJECT_LIST      => 4;
 use constant SECTION_ARG_LIST         => 5;
 use constant SECTION_SINGLE_WORD      => 6;
 use constant SECTION_TABLE_LIST       => 7;
+use constant SECTION_ORDER_BY         => 8;
 use constant IPOS => 3; # position of the $i argument in sql_split
+
+# comparison types
+use constant CMP_AGNOSTIC => 0;
+use constant CMP_STRING   => 1;
+use constant CMP_NUMBER   => 2;
 
 # argument types
 use constant ARG_STRING      => 0;
@@ -48,6 +57,11 @@ use constant OP_MULT    => 3;
 use constant OP_EXP     => 4;
 use constant OP_MISC    => 5;
 
+# braces around field names
+use constant FIELD_BRACES_PROHIBIT => 0;
+use constant FIELD_BRACES_ALLOW    => 1;
+use constant FIELD_BRACES_REQUIRE  => 2;
+
 # misc constants
 use constant OPTSPKG => 'SQL::YASP::Opts';
 
@@ -57,11 +71,10 @@ $nullchar = chr(0);
 $wineof = chr(26);
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # new
-# 
 # OVERRIDE ME
-# 
+#
 sub new {
 	my ($class) = @_;
 	my $self = bless({}, $class);
@@ -71,58 +84,60 @@ sub new {
 	
 	return $self;
 }
-# 
+#
 # new
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # build_tree
-# 
 # OVERRIDE ME
-# 
+#
 sub build_tree {
-	my ($self, $stmt, @tokens) = @_;
+	my ($self, $stmt, $tokens, %opts) = @_;
 	my ($cmd);
 	
 	# always set $stmt->{'command'}
-	$cmd = $stmt->{'command'} = shift @tokens;
+	$cmd = $stmt->{'command'} = shift @$tokens;
 	
 	# create
 	if ($cmd eq 'create')
-		{$self->tree_create($stmt, @tokens) or return undef}
+		{$self->tree_create($stmt, @$tokens) or return undef}
 	
 	# select
 	elsif ($cmd eq 'select')
-		{$self->tree_select($stmt, @tokens) or return undef}
+		{$self->tree_select($stmt, @$tokens) or return undef}
 	
 	# insert
 	elsif ($cmd eq 'insert')
-		{$self->tree_insert($stmt, @tokens) or return undef}
+		{$self->tree_insert($stmt, @$tokens) or return undef}
 	
 	# update
 	elsif ($cmd eq 'update')
-		{$self->tree_update($stmt, @tokens) or return undef}
+		{$self->tree_update($stmt, @$tokens) or return undef}
 	
 	# delete
 	elsif ($cmd eq 'delete')
-		{$self->tree_delete($stmt, @tokens) or return undef}
+		{$self->tree_delete($stmt, @$tokens) or return undef}
+	
+	# if allow unknown command
+	elsif ($opts{'allow_unknown_command'})
+		{ return undef }
 	
 	# else don't recognize command
 	else
-		{croak "Do not recognize command: [$stmt->{'command'}]"}
-
+		{croak "[1] Do not recognize command: [$stmt->{'command'}]"}
 }
-# 
+#
 # build_tree
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_create
-# 
+#
 # OVERRIDE ME
-# 
+#
 sub tree_create {
 	my ($self, $stmt, @els) = @_;
 	
@@ -136,16 +151,15 @@ sub tree_create {
 	# else don't know this type of object
 	croak "do not know how to create this type of object: $self->{'create_type'}";
 }
-# 
+#
 # tree_create
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_create_table
-# 
 # OVERRIDE ME
-# 
+#
 sub tree_create_table {
 	my ($self, $stmt, @els) = @_;
 	my ($fields);
@@ -202,14 +216,14 @@ sub tree_create_table {
 }
 # 
 # tree_create_table
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_select
-# 
+#
 # OVERRIDE ME
-# 
+#
 sub tree_select {
 	my ($self, $stmt, @els) = @_;
 	my ($unset);
@@ -217,21 +231,23 @@ sub tree_select {
 	$unset = $self->get_sections(
 		$stmt, \@els,
 		'from'      =>  SECTION_TABLE_LIST,
-		'order by'  =>  SECTION_COMMA_SPLIT,
+		'order by'  =>  SECTION_ORDER_BY,
 		'where'     =>  SECTION_EXPRESSION,
 		'having'    =>  SECTION_EXPRESSION,
 		'group by'  =>  SECTION_COMMA_SPLIT,
 		'into'      =>  SECTION_TABLE_LIST,
-		);
+	);
+	
+	defined($unset) or return undef;
 	
 	$stmt->{'fields'} = $self->tree_select_fields($stmt, $unset->{':open'});
 }
 # 
 # tree_select
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_delete
 # 
 # OVERRIDE ME
@@ -243,14 +259,14 @@ sub tree_delete {
 	$unset = $self->get_sections($stmt, \@els,
 		'from'      =>  SECTION_TABLE_LIST,
 		'where'     =>  SECTION_EXPRESSION,
-		);
+	);
 }
 # 
 # tree_delete
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_insert
 # 
 # OVERRIDE ME
@@ -274,10 +290,10 @@ sub tree_insert {
 }
 # 
 # tree_insert
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_update
 # 
 # OVERRIDE ME
@@ -298,14 +314,13 @@ sub tree_update {
 	# set "set" clause
 	get_set_fields($stmt, $opener, $unset)
 		or return undef;
-
 }
 # 
 # tree_update
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # get_set_fields
 # 
 sub get_set_fields {
@@ -319,7 +334,7 @@ sub get_set_fields {
 		@fields = comma_split([deref_args($fieldlist)]);
 		@exprs  = comma_split( [deref_args($unset->{'values'})] );
 		$i = 0;
-
+		
 		if (@fields != @exprs) {
 			SQL::YASP::Expr::set_err('invalid syntax: field list and expression list must have same number of elements');
 			return undef;
@@ -332,13 +347,15 @@ sub get_set_fields {
 		
 		$stmt->{'set'} = \%set;
 	}
+	
+	return $stmt->{'set'};
 }
 # 
 # get_set_fields
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # tree_select_fields
 # 
 sub tree_select_fields {
@@ -388,7 +405,7 @@ sub tree_select_fields {
 }
 # 
 # tree_select_fields
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
 ###############################################################################
@@ -396,7 +413,7 @@ sub tree_select_fields {
 ###############################################################################
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # after_new
 # 
 sub after_new {
@@ -418,6 +435,7 @@ sub after_new {
 	exists($self->{'!_is_not'})          or  $self->{'!_is_not'} = 1;
 	exists($self->{'backslash_escape'})  or  $self->{'backslash_escape'} = 1;
 	exists($self->{'dquote_escape'})     or  $self->{'dquote_escape'} = 1;
+	exists($self->{'field_braces'})      or  $self->{'field_braces'} =  FIELD_BRACES_PROHIBIT;
 	
 	# double word tokens
 	$self->{'double_word_tokens'} ||= {
@@ -473,32 +491,31 @@ sub after_new {
 	
 
 }
-# 
+#
 # after_new
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # parse
-# 
+#
 sub parse {
 	my ($self, $sql, %opts) = @_;	
 	my ($rv, @tokens, $carry);
 	
-	# get parser if one wasn't passed
+	# create parser if one wasn't passed
 	unless (ref $self) {
 		$self::defparser ||= $self->new;
 		$self = $self::defparser;
 	}
 	
-	# instantiate returned statement object
+	# instantiate statement object to be returned
 	$rv = SQL::YASP::Statement->new();
 	
-	# hold on to original SQL if necessary
+	# hold on to original SQL if requested to do so
 	$self->{'keep_org_sql'} and $rv->{'org_sql'} = $sql;
 	
-	# remove trailing semicolon, which after all these years
-	# I still forget to leave out
+	# remove trailing semicolon
 	$sql =~ s|\s*\;\s*$||s;
 	
 	# tokenize statement
@@ -512,19 +529,19 @@ sub parse {
 	$rv->{'table_definitions'} = $opts{'table_definitions'};
 	
 	# build statement tree
-	$self->build_tree($rv, @tokens) or return undef;
+	$self->build_tree($rv, \@tokens, %opts) or return undef;
 	
 	# return statement object
 	return $rv;
 }
-# 
+#
 # parse
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # get_sections
-# 
+#
 sub get_sections {
 	my ($self, $stmt, $els, %opts) = @_;
 	my @clauses = arr_split([keys %opts], $els, keep_del_front=>1);
@@ -557,6 +574,11 @@ sub get_sections {
 			foreach my $table_def (comma_split($clause)) {
 				my ($key, $name);
 				
+				# check for expression-as-table, which is
+				# out of scope
+				foreach my $def (@$table_def)
+					{ ref($def) and return undef }
+				
 				# get name
 				$name = lc(shift(@{$table_def}));
 				
@@ -569,12 +591,45 @@ sub get_sections {
 				$tdefs->{$key} = $name;
 			}
 			
+			# default $stmt->{'table_name'} to empty string
+			$stmt->{'table_name'} = '';
+			
+			# if 'from' clause contains exactly one table,
+			# put that single table into the {'table_name'} element
+			if (keys(%$tdefs) == 1) {
+				my ($key) = keys(%$tdefs);
+				my ($val) = values(%$tdefs);
+				
+				if ($key eq $val) {
+					$stmt->{'table_name'} = $val;
+				}
+			}
+			
 			$stmt->{$sname} = $tdefs;
 		}
 		
 		# comma delimited list
 		elsif ($opts{$sname} == SECTION_COMMA_SPLIT)
 			{$stmt->{$sname} = comma_split($clause)}
+		
+		# comma delimited list, build into expression objects
+		elsif ($opts{$sname} == SECTION_ORDER_BY){
+			my $exprs = comma_split($clause);
+			
+			foreach my $expr (@$exprs) {
+				my ($desc);
+				
+				if ($expr->[-1] eq 'desc') {
+					$desc = 1;
+					pop @$expr;
+				}
+				
+				$expr = SQL::YASP::Expr->new($stmt, $expr);
+				$expr->{'desc'} = $desc;
+			}
+			
+			$stmt->{$sname} = $exprs;
+		}
 		
 		# expression
 		elsif ($opts{$sname} == SECTION_EXPRESSION)
@@ -595,12 +650,12 @@ sub get_sections {
 	
 	return $rv;
 }
-# 
+#
 # get_sections
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # field_set_list
 # 
 sub field_set_list {
@@ -617,10 +672,10 @@ sub field_set_list {
 }
 # 
 # field_set_list
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # add_args
 # 
 sub add_args {
@@ -641,10 +696,10 @@ sub add_args {
 }
 # 
 # add_args
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # sql_split
 # 
 sub sql_split {
@@ -745,6 +800,13 @@ sub sql_split {
 			next CHARLOOP;
 		}
 		
+		# square brace
+		elsif ( $self->{'field_braces'} && ($char eq '[') ) {
+			push @major, joinfield(@field);
+			@field = ();
+			$inquote = ']';
+		}
+		
 		# quote
 		elsif ($quotes{$char}) {
 			push @major, joinfield(@field);
@@ -788,7 +850,7 @@ sub sql_split {
 	# get last field
 	push @major, joinfield(@field);
 	
-
+	
 	# pass position back to caller
 	$_[IPOS] = $i;
 
@@ -798,8 +860,13 @@ sub sql_split {
 	# 
 	foreach my $el (@major) {
 		# quoted strings and references don't get split
-		if ( ref($el) || ($el =~ m|^['"]|) )
+		if (
+			ref($el) ||
+			($self->{'field_braces'} ? ($el =~ m|^['"\[]|) : ($el =~ m|^['"]|) )
+			)
 			{push @rv, $el}
+		
+		
 		elsif(length $el)
 			{push @rv, grep {m|\S|s} split(m/(\s|[\!\?\,]|[\d\.]+|[a-z0-9_]+|$opregex|\S+)\s*/soi, $el);}
 	}
@@ -875,10 +942,10 @@ sub sql_split {
 }
 # 
 # sql_split
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # misc short subs
 # 
 sub joinfield {
@@ -931,10 +998,10 @@ sub default_functions {
 
 # 
 # misc short subs
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # arr_split
 # 
 # splits an array into an array of arrays
@@ -977,10 +1044,10 @@ sub comma_split {arr_split([','], @_)}
 
 # 
 # arr_split
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # object_list
 # 
 # used for situations where the argument list is a comma delimited
@@ -995,10 +1062,10 @@ sub object_list {
 }
 # 
 # object_list
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # get_ixhash
 # 
 sub get_ixhash {
@@ -1009,10 +1076,10 @@ sub get_ixhash {
 }
 # 
 # get_ixhash
-#---------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 # deref_args
 # 
 sub deref_args {
@@ -1026,10 +1093,10 @@ sub deref_args {
 }
 # 
 # deref_args
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 # restring
 # 
 sub restring {
@@ -1057,7 +1124,7 @@ sub restring {
 }
 # 
 # restring
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
 # optsref
@@ -1066,14 +1133,16 @@ sub optsref{return ref($_[0]) ? $_[0] : {@_}}
 
 
 
-#########################################################################################
+###############################################################################
 # SQL::YASP::Statement
 # 
 package SQL::YASP::Statement;
 use strict;
 use Carp 'croak';
 
+#------------------------------------------------------------------------------
 # new
+#
 sub new {
 	my ($class, $sql) = @_;
 	
@@ -1082,8 +1151,12 @@ sub new {
 	
 	return bless({}, $class);
 }
+#
+# new
+#------------------------------------------------------------------------------
 
-#---------------------------------------------------------------------------------------
+
+#------------------------------------------------------------------------------
 # select_fields
 # 
 sub select_fields {
@@ -1127,34 +1200,30 @@ sub select_fields {
 }
 # 
 # select_fields
-#---------------------------------------------------------------------------------------
-
-
-#---------------------------------------------------------------------------------------
-# DESTROY
-# 
-# TESTING
-# 
-# DESTROY {print "destroying SQL::YASP::Statement\n"}
-# 
-# DESTROY
-#---------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
 # 
 # SQL::YASP::Statement
-#########################################################################################
+###############################################################################
 
 
 
-#########################################################################################
+###############################################################################
 # SQL::YASP::Expr
 # 
 package SQL::YASP::Expr;
 use strict;
 use Carp 'croak', 'confess';
 use vars qw[@dbin %dfuncs];
-# use Debug::ShowStuff ':all';  # TESTING
+
+# debug tools
+# use Debug::ShowStuff ':all';
+
+# comparison types
+use constant CMP_AGNOSTIC => 0;
+use constant CMP_STRING   => 1;
+use constant CMP_NUMBER   => 2;
 
 # operator precedence levels
 use constant OP_BETWEEN => SQL::YASP::OP_BETWEEN;
@@ -1187,7 +1256,7 @@ sub unquote{SQL::YASP::unquote(@_)}
 sub restring{SQL::YASP::restring(@_)}
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 # new
 # 
 sub new {
@@ -1202,10 +1271,10 @@ sub new {
 }
 # 
 # new
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 # evalexpr
 # 
 sub evalexpr {
@@ -1269,7 +1338,7 @@ sub evalexpr {
 	
 	
 	
-	#-------------------------------------------------------------------------------------------
+	#--------------------------------------------------------------------------
 	# evaluate expression
 	# 
 	EVALEXPR:
@@ -1281,7 +1350,7 @@ sub evalexpr {
 		}
 		
 		# if expression is one item long
-		if (@args == 1){
+		if (@args == 1) {
 			my $arg = $args[0];
 			defined($arg) or die 'no $arg';
 			
@@ -1296,7 +1365,7 @@ sub evalexpr {
 						
 						$rv = $opts->{'params'}->[$arg->{'index'}];
 					}
-
+					
 					else {
 						set_err('Do not have any params to match placeholders');
 					}
@@ -1305,7 +1374,7 @@ sub evalexpr {
 				# else just return it
 				else
 					{$rv = $arg}
-
+				
 				last EVALEXPR;
 			}
 			
@@ -1313,15 +1382,62 @@ sub evalexpr {
 			if (UNIVERSAL::isa($arg, 'ARRAY'))
 				{croak 'got single array ref'}
 			
+			# field name with braces
+			if (
+				$parser->{'field_braces'} &&
+				($arg =~ m|^\[.+\]$|s)
+				) {
+				# if no db record was sent, that's an error
+				if (! $opts->{'db_record'}) {
+					set_err('Cannot evaluate field expression w/o database record');
+					last EVALEXPR;
+				}
+				
+				# get field name
+				my $field_name = $arg;
+				$field_name =~ s|^\[(.+)\]$|$1|s;
+				
+				# normalize
+				if ($parser->{'normalize_fields'}) {
+					$field_name =~ s|^\s+||s;
+					$field_name =~ s|\s+$||s;
+					$field_name =~ s|\s+| |gs;
+					$field_name = lc($field_name);
+				}
+				
+				# if the field is in the database record OR
+				# if we can assume that any field is in the
+				# record
+				if (
+					$opts->{'assume_fields'} ||
+					exists($opts->{'db_record'}->{$field_name})
+					) {
+					$rv = $opts->{'db_record'}->{$field_name};
+				}
+				
+				# else give error that no such field is found
+				else {
+					set_err('Do not have field named ' . $field_name);
+				}
+				
+				last EVALEXPR;
+			}
+			
 			# function
 			if ($funcs->{$arg}) {
 				$rv = &{$funcs->{$arg}->{'s'}}($opts);
 				sbool($funcs->{$arg}, $rv);
 			}
 			
-			# field name
-			elsif ($opts->{'db_record'} && exists($opts->{'db_record'}->{$arg}))
-				{$rv = $opts->{'db_record'}->{$arg}}
+			# field name w/o braces
+			# TODO: normalize non-braced field names, mainly in terms of upper/lowercase
+			elsif (
+				$opts->{'db_record'} &&
+				($parser->{'field_braces'} != SQL::YASP::FIELD_BRACES_REQUIRE) &&
+				exists($opts->{'db_record'}->{$arg})
+				){
+				$rv = $opts->{'db_record'}->{$arg};
+			}
 			
 			# constant
 			elsif ($opts->{'const'} && exists($opts->{'const'}->{$arg}))
@@ -1487,7 +1603,7 @@ sub evalexpr {
 	}
 	# 
 	# evaluate expression
-	#-------------------------------------------------------------------------------------------
+	#--------------------------------------------------------------------------
 	
 	
 	# if error, return undef
@@ -1509,10 +1625,123 @@ sub evalexpr {
 }
 # 
 # evalexpr
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
+# comparetype
+# 
+sub comparetype {
+	my ($self, %opts) = @_;
+	
+	# quick exit
+	exists($self->{'comparetype'}) and return $self->{'comparetype'};
+	
+	my ($args_ref, $defs);
+	my ($parser, $typefix, $lukas, $funcs, %allops, @oplevels, @args);
+	
+	# dereference arguments
+	$args_ref = $opts{'args'} || $self->{'expr'};
+	@args = deref_args($args_ref);
+	
+	# get field definitions
+	$defs = $opts{'defs'} or croak 'did not get field definitions';
+	
+	# get stuff from options
+	$parser    =  $self->{'parser'};
+	$typefix   =  $parser->{'type_fix'};
+	$funcs     =  $parser->{'functions'};
+	%allops    =  %{$parser->{'allops'}};
+	@oplevels  =  @{$parser->{'ops'}};
+	
+	
+	# if expression is zero items long, that's a syntax error
+	if (! @args) {
+		set_err('invalid syntax: no arguments');
+		last EVALEXPR;
+	}
+	
+	# if expression is one item long
+	if (@args == 1){
+		my $arg = $args[0];
+		defined($arg) or die 'no $arg';
+		
+		# if it's a hash
+		if (UNIVERSAL::isa($arg, 'HASH')) {
+			return CMP_AGNOSTIC;
+		}
+		
+		# if it's an array: should never reach this point
+		if (UNIVERSAL::isa($arg, 'ARRAY'))
+			{croak 'got single array ref'}
+		
+		# function
+		if ($funcs->{$arg}) {
+			my $func = $funcs->{$arg};
+			
+			defined($func->{'c'}) and return $func->{'c'};
+			return CMP_STRING;
+		}
+		
+		# field name
+		elsif ( exists $defs->{$arg} )
+			{ return $defs->{$arg} }
+		
+		# constant
+		elsif ($opts{'const'} && exists($opts{'const'}->{$arg}))
+			{return CMP_AGNOSTIC}
+		
+		# literal expression
+		elsif ($arg =~ m|^['"]|)
+			{return CMP_AGNOSTIC}
+		
+		# number
+		elsif (is_numeric($arg))
+			{return CMP_NUMBER}
+		
+		# else don't know what it is
+		else
+			{set_err('cannot interpret expression: ' . $arg)}
+		
+		last EVALEXPR;
+	}
+	
+	# evaluate expression based on binary operators
+	# search for loosest bound first
+	foreach my $bg (@oplevels) {
+		my $i = $#args - 1;
+		
+		OPLOOP:
+		while ($i > 0) {
+			my $carg = $args[$i];
+			my ($not);
+			
+			# if the current argument is a binary operator in this precedence level
+			if ( (! ref $carg) && $bg->{$carg} ) {
+				my $subdef = $bg->{$carg};
+				defined($subdef->{'c'}) and return $subdef->{'c'};
+				return CMP_STRING;
+			}
+			
+			$i--;
+		}
+	}
+	
+	
+	# if the first arg is a function name
+	if (my $function = $funcs->{$args[0]}) {
+		$function->{'c'} and return $function->{'c'};
+		die 'have not implemented recursing if the function is compare type agnostic';
+	}
+	
+	set_err('could not evaluate expression: ' . restring(@args));
+}
+# 
+# comparetype
+#------------------------------------------------------------------------------
+
+
+#------------------------------------------------------------------------------
 # sbool
 # 
 sub sbool {
@@ -1522,45 +1751,45 @@ sub sbool {
 }
 # 
 # sbool
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 # set_err
-# 
+#
 sub set_err {
 	$SQL::YASP::err = 1;
 	$SQL::YASP::errstr = $_[0];
 	return undef;
 }
-# 
+#
 # set_err
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 # numeric checking and conversion
-# 
+#
 sub is_numeric {
-	defined($_[0]) and 
-	(! ref $_[0]) and 
-	$_[0] =~ m|^[\+\-]?\d+\.?$|
+	defined($_[0]) and
+	(! ref $_[0]) and
+	$_[0] =~ m|^[\+\-]?\d+\.?$|s
 	||
-	$_[0] =~ m|^[\+\-]?\d*\.\d+$|;
+	$_[0] =~ m|^[\+\-]?\d*\.\d+$|s;
 }
 
 sub as_number {
 	is_numeric($_[0]) or $_[0]=0;
 }
-# 
+#
 # numeric checking and conversion
-#-------------------------------------------------
+#------------------------------------------------------------------------------
 
 
 
 
 # NUM_BETWEEN
-$dbin[OP_BETWEEN]{'between'} = {s=>\&num_between,  args=>ARG_RAW};
+$dbin[OP_BETWEEN]{'between'} = {s=>\&num_between,  args=>ARG_RAW, c=>CMP_NUMBER};
 sub num_between {
 	my ($opts, $expr, $args) = @_;
 	my ($min, $max) = arr_split(['and'], $args, max=>2);
@@ -1579,7 +1808,7 @@ sub num_between {
 
 
 # LOGICAL AND
-$dbin[OP_LOGICAL]{'and'} = {args=>ARG_RAW, s=>\&land};
+$dbin[OP_LOGICAL]{'and'} = {args=>ARG_RAW, s=>\&land, c=>CMP_NUMBER};
 sub land {
 	my ($opts, $left, $right) = @_;
 	
@@ -1594,7 +1823,7 @@ sub land {
 }
 
 # LOGICAL OR
-$dbin[OP_LOGICAL]{'or'} = {args=>ARG_RAW, s=>sub{
+$dbin[OP_LOGICAL]{'or'} = {args=>ARG_RAW, c=>CMP_NUMBER, s=>sub{
 	my ($opts, $left, $right) = @_;
 	
 	evalexpr($left, $opts, $left) or return;
@@ -1609,11 +1838,11 @@ $dbin[OP_LOGICAL]{'or'} = {args=>ARG_RAW, s=>sub{
 
 # LOGICAL NAND
 # equivalent to "not and"
-$dbin[OP_LOGICAL]{'nand'} = {args=>ARG_RAW, s=>sub{return lnot($_[0], land(@_))}};
+$dbin[OP_LOGICAL]{'nand'} = {args=>ARG_RAW, c=>CMP_NUMBER, s=>sub{return lnot($_[0], land(@_))}};
 
 # LOGICAL NOR
 # returns true if both arguments are false
-$dbin[OP_LOGICAL]{'nor'} = {args=>ARG_RAW, s=>sub{
+$dbin[OP_LOGICAL]{'nor'} = {args=>ARG_RAW, c=>CMP_NUMBER, s=>sub{
 	my ($opts, $left, $right) = @_;
 	
 	evalexpr($left, $opts, $left) or return;
@@ -1629,14 +1858,14 @@ $dbin[OP_LOGICAL]{'nor'} = {args=>ARG_RAW, s=>sub{
 
 # LOGICAL XOR
 # returns true if truth of arguments are different
-$dbin[OP_LOGICAL]{'xor'}  = {s=>sub{$_[1] xor $_[2]}, rv=>RV_BOOL};
+$dbin[OP_LOGICAL]{'xor'}  = {s=>sub{$_[1] xor $_[2]}, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 # LOGICAL XNOR
 # returns true if truth of arguments are the same
-$dbin[OP_LOGICAL]{'xnor'} = {s=>sub{( $_[1] && $_[2] ) || ( (! $_[1]) && (! $_[2]) )}, rv=>RV_BOOL};
+$dbin[OP_LOGICAL]{'xnor'} = {s=>sub{( $_[1] && $_[2] ) || ( (! $_[1]) && (! $_[2]) )}, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 # LIKE
-$dbin[OP_MISC]{'like'} = {s=>\&string_like, args=>ARG_RAW, rv=>RV_BOOL};
+$dbin[OP_MISC]{'like'} = {s=>\&string_like, args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER};
 sub string_like {
 	my ($opts, $arga, $argb, %bonusopts) = @_;
 	my $esc = '\\';
@@ -1678,15 +1907,15 @@ sub string_like {
 
 
 # ILIKE: case insensitive LIKE
-$dbin[OP_MISC]{'ilike'} = {s=>sub{string_like(@_, i=>1)}, args=>ARG_RAW, rv=>RV_BOOL};
+$dbin[OP_MISC]{'ilike'} = {s=>sub{string_like(@_, i=>1)}, args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 # IS
 # This one's a little funky.  The rules go like this:
 # The second batch of arguments are NOT evaluated.
 # There are only two possibilities of what may be
 # in the second array of arguments: "null", or "not null"
-# NULL is defined in this case as an empty string or undef
-$dbin[OP_MISC]{'is'} = {s=>\&string_is, args=>ARG_RAW, rv=>RV_BOOL};
+# NULL is synonymous with UNDEF
+$dbin[OP_MISC]{'is'} = {s=>\&string_is, args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER};
 sub string_is {
 	my ($opts, $arg1, $arg2_ref) = @_;
 	my @arg2 = @{$arg2_ref};
@@ -1706,20 +1935,20 @@ sub string_is {
 
 
 # STRING COMPARISON
-$dbin[OP_MISC]{'regexp'} = {s=>sub{$_[1] =~ m/$_[2]/s}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'iregexp'} = {s=>sub{$_[1] =~ m/$_[2]/si}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'<=>'} = $dbin[OP_MISC]{'='} = $dbin[OP_MISC]{'eq'} = {s=>sub{$_[1] eq $_[2]}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'ne'} = {s=>sub{$_[1] ne $_[2]}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'lt'} = {s=>sub{$_[1] lt $_[2]}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'gt'} = {s=>sub{$_[1] gt $_[2]}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'eqi'} = {s=>sub{lc($_[1]) eq lc($_[2])}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'nei'} = {s=>sub{lc($_[1]) ne lc($_[2])}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'lti'} = {s=>sub{lc($_[1]) lt lc($_[2])}, rv=>RV_BOOL};
-$dbin[OP_MISC]{'gti'} = {s=>sub{lc($_[1]) gt lc($_[2])}, rv=>RV_BOOL};
+$dbin[OP_MISC]{'regexp'} = {s=>sub{$_[1] =~ m/$_[2]/s}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'iregexp'} = {s=>sub{$_[1] =~ m/$_[2]/si}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'<=>'} = $dbin[OP_MISC]{'='} = $dbin[OP_MISC]{'eq'} = {s=>sub{$_[1] eq $_[2]}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'ne'} = {s=>sub{$_[1] ne $_[2]}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'lt'} = {s=>sub{$_[1] lt $_[2]}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'gt'} = {s=>sub{$_[1] gt $_[2]}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'eqi'} = {s=>sub{lc($_[1]) eq lc($_[2])}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'nei'} = {s=>sub{lc($_[1]) ne lc($_[2])}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'lti'} = {s=>sub{lc($_[1]) lt lc($_[2])}, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'gti'} = {s=>sub{lc($_[1]) gt lc($_[2])}, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 
 # regular expression
-$dbin[OP_MISC]{'=~'} = {s=>\&rxmatch, rv=>RV_BOOL};
+$dbin[OP_MISC]{'=~'} = {s=>\&rxmatch, rv=>RV_BOOL, c=>CMP_NUMBER};
 sub rxmatch {
 	my ($opts, $str, $rx) = @_;
 	my $not = 'xism';
@@ -1732,7 +1961,7 @@ sub rxmatch {
 
 
 # IN
-$dbin[OP_MISC]{'in'} = {s=>\&string_in, args=>ARG_RAW, rv=>RV_BOOL};
+$dbin[OP_MISC]{'in'} = {s=>\&string_in, args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER};
 sub string_in {
 	my ($opts, $arg1, $arg2, %bonusopts) = @_;
 	my $ci = $bonusopts{'i'};
@@ -1753,37 +1982,37 @@ sub string_in {
 
 # IIN: case insensitive IN
 # not in MYSQL
-$dbin[OP_MISC]{'iin'} = {s=>sub{return string_in(@_, i=>1)}, args=>ARG_RAW, rv=>RV_BOOL};
+$dbin[OP_MISC]{'iin'} = {s=>sub{return string_in(@_, i=>1)}, args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 # NUMERIC COMPARISONS
-$dbin[OP_MISC]{'>'}  = {s=>sub{$_[1] >  $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL};
-$dbin[OP_MISC]{'<'}  = {s=>sub{$_[1] <  $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL};
-$dbin[OP_MISC]{'>='} = {s=>sub{$_[1] >= $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL};
-$dbin[OP_MISC]{'<='} = {s=>sub{$_[1] <= $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL};
-$dbin[OP_MISC]{'=='} = {s=>sub{$_[1] == $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL};
+$dbin[OP_MISC]{'>'}  = {s=>sub{$_[1] >  $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'<'}  = {s=>sub{$_[1] <  $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'>='} = {s=>sub{$_[1] >= $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'<='} = {s=>sub{$_[1] <= $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL, c=>CMP_NUMBER};
+$dbin[OP_MISC]{'=='} = {s=>sub{$_[1] == $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 # NUMERIC NOT EQUAL: different than MySql, where <> is the same as !=
-$dbin[OP_MISC]{'<>'} = {s=>sub{$_[1] != $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL};
+$dbin[OP_MISC]{'<>'} = {s=>sub{$_[1] != $_[2]}, args=>ARG_NUMERIC, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 
 # CONCATENATION
-$dbin[OP_MISC]{'||'} = {s=>sub{ (defined($_[1]) ? $_[1] : '') . (defined($_[2]) ? $_[2] : '')}, args=>ARG_SENDNULLS};
-$dbin[OP_MISC]{'|||'} = {args=>ARG_SENDNULLS, s=>sub{
+$dbin[OP_MISC]{'||'} = {s=>sub{ (defined($_[1]) ? $_[1] : '') . (defined($_[2]) ? $_[2] : '')}, args=>ARG_SENDNULLS, c=>CMP_STRING};
+$dbin[OP_MISC]{'|||'} = {args=>ARG_SENDNULLS, c=>CMP_STRING, s=>sub{
 	my $space = (defined($_[1]) && defined($_[2]) && ($_[1] =~ m|\S$|) && ($_[2] =~ m|^\S|) ) ? ' ' : '';
 	(defined($_[1]) ? $_[1] : '') . $space . (defined($_[2]) ? $_[2] : '');
 	}};
 
 # NUMERIC OPERATIONS
-$dbin[OP_ADD]{'-'}  = {s=>sub{$_[1] -  $_[2]}, args=>ARG_NUMERIC};
-$dbin[OP_ADD]{'+'}  = {s=>sub{$_[1] +  $_[2]}, args=>ARG_NUMERIC};
-$dbin[OP_MULT]{'*'} = {s=>sub{$_[1] *  $_[2]}, args=>ARG_NUMERIC};
-$dbin[OP_MULT]{'%'} = {s=>sub{$_[1] %  $_[2]}, args=>ARG_NUMERIC};
-$dbin[OP_EXP]{'^'}  = {s=>sub{$_[1] ** $_[2]}, args=>ARG_NUMERIC};
-$dbin[OP_MULT]{'%'} = {args=>ARG_NUMERIC, s=>sub{
+$dbin[OP_ADD]{'-'}  = {s=>sub{$_[1] -  $_[2]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
+$dbin[OP_ADD]{'+'}  = {s=>sub{$_[1] +  $_[2]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
+$dbin[OP_MULT]{'*'} = {s=>sub{$_[1] *  $_[2]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
+$dbin[OP_MULT]{'%'} = {s=>sub{$_[1] %  $_[2]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
+$dbin[OP_EXP]{'^'}  = {s=>sub{$_[1] ** $_[2]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
+$dbin[OP_MULT]{'%'} = {args=>ARG_NUMERIC, c=>CMP_NUMBER, s=>sub{
 		$_[2] or return set_err('divide by zero');
 		$_[1] % $_[2];
 	}};
-$dbin[OP_MULT]{'/'} = {args=>ARG_NUMERIC, s=>sub{
+$dbin[OP_MULT]{'/'} = {args=>ARG_NUMERIC, c=>CMP_NUMBER, s=>sub{
 		$_[2] or return set_err('divide by zero');
 		$_[1] / $_[2];
 	}};
@@ -1793,26 +2022,28 @@ $dbin[OP_MULT]{'/'} = {args=>ARG_NUMERIC, s=>sub{
 $dfuncs{'tolower'} = 
 	$dfuncs{'lcase'} = 
 	$dfuncs{'lower'} = 
-	{s=>sub{lc($_[1])}};
+	{s=>sub{lc($_[1])}, c=>CMP_STRING};
 
 # TOUPPER, UCASE, UPPER
 $dfuncs{'toupper'} = 
 	$dfuncs{'ucase'} = 
-	$dfuncs{'upper'} = 
-	{s=>sub{uc($_[1])}};
+	$dfuncs{'upper'} =
+	{ s=>sub{uc($_[1])}, c=>CMP_STRING};
 
 # TOTITLE, TCASE, TITLE
 $dfuncs{'totitle'} = 
 	$dfuncs{'tcase'} = 
-	$dfuncs{'title'} = 
-	{s=>sub{
-		my $rv = lc($_[1]);
-		$rv =~ s|\b(.)|\U$1|sg;
-		$rv;
-	}};
+	$dfuncs{'title'} = {
+		s=>sub{
+			my $rv = lc($_[1]);
+			$rv =~ s|\b(.)|\U$1|sg;
+			$rv;
+		},
+		c=>CMP_STRING
+	};
 
 # NOT: negate results
-$dfuncs{'not'} = {s=>\&lnot, args=>ARG_SENDNULLS};
+$dfuncs{'not'} = {s=>\&lnot, args=>ARG_SENDNULLS, c=>CMP_NUMBER};
 sub lnot {
 	$_[0]->{'parser'}->{'lukas'} and (! defined $_[1]) and return undef;
 	return $_[1] ? 0 : 1;
@@ -1822,11 +2053,11 @@ sub lnot {
 $dfuncs{'err'} = {s=>sub{return set_err($_[1])}};
 
 # ISNULL: returns true if the given value is NOT defined
-$dfuncs{'isnull'} = {s=>sub{! defined $_[1]}, args=>ARG_SENDNULLS, rv=>RV_BOOL};
+$dfuncs{'isnull'} = {s=>sub{! defined $_[1]}, args=>ARG_SENDNULLS, c=>CMP_NUMBER, rv=>RV_BOOL};
 
 # DEFINED: returns true if *all* of the given values are defined
 # empty strings count as defined
-$dfuncs{'defined'} = {args=>ARG_RAW, rv=>RV_BOOL, s=>sub{
+$dfuncs{'defined'} = {args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER, s=>sub{
 	my ($opts, @args) = @_;
 	my ($val);
 	
@@ -1840,10 +2071,10 @@ $dfuncs{'defined'} = {args=>ARG_RAW, rv=>RV_BOOL, s=>sub{
 
 # HASCONTENT: returns true if the given value is defined
 # and has at least one non-space character
-$dfuncs{'hascontent'} = {s=>sub{$_[1] =~ m|\S|}, rv=>RV_BOOL};
+$dfuncs{'hascontent'} = {s=>sub{$_[1] =~ m|\S|}, rv=>RV_BOOL, c=>CMP_NUMBER};
 
 # HASNULL: returns true if *any* the given values are null
-$dfuncs{'hasnull'} = {args=>ARG_RAW, rv=>RV_BOOL, s=>sub{
+$dfuncs{'hasnull'} = {args=>ARG_RAW, rv=>RV_BOOL, c=>CMP_NUMBER, s=>sub{
 	my ($opts, @args) = @_;
 	my ($val);
 	
@@ -1856,9 +2087,9 @@ $dfuncs{'hasnull'} = {args=>ARG_RAW, rv=>RV_BOOL, s=>sub{
 }};
 
 # NULL, TRUE, FALSE
-$dfuncs{'undef'}  = $dfuncs{'null'}  = {s=>sub{undef}, args=>ARG_NONE};
-$dfuncs{'true'}  = {s=>sub{1},  args=>ARG_NONE};
-$dfuncs{'false'} = {s=>sub{0},  args=>ARG_NONE};
+$dfuncs{'undef'}  = $dfuncs{'null'}  = {s=>sub{undef}, args=>ARG_NONE, c=>CMP_NUMBER};
+$dfuncs{'true'}  = {s=>sub{1},  args=>ARG_NONE, c=>CMP_NUMBER};
+$dfuncs{'false'} = {s=>sub{0},  args=>ARG_NONE, c=>CMP_NUMBER};
 
 # IF
 $dfuncs{'if'} = {s=>\&func_if, args=>ARG_RAW};
@@ -1888,7 +2119,7 @@ sub func_if {
 # if any argument is null.  That seems a little harsh to me.  If
 # you feel like I misread the documentation on that feel free
 # to drop me an email on the matter: miko@idocs.com
-$dfuncs{'cat'} = $dfuncs{'concat'} = {s=>sub{shift;grep {defined($_) or return undef} @_;join('', @_)}};
+$dfuncs{'cat'} = $dfuncs{'concat'} = {c=>CMP_STRING, s=>sub{shift;grep {defined($_) or return undef} @_;join('', @_)}};
 
 
 # CONCAT_WS
@@ -1896,7 +2127,7 @@ $dfuncs{'cat'} = $dfuncs{'concat'} = {s=>sub{shift;grep {defined($_) or return u
 # Following the MySql documentation, this function returns NULL
 # if the first argument is null, but nulls after that are ignored
 # (not counted as part of the returned string).
-$dfuncs{'cat_ws'} = $dfuncs{'concat_ws'} = {s=>\&concat_ws};
+$dfuncs{'cat_ws'} = $dfuncs{'concat_ws'} = {s=>\&concat_ws, c=>CMP_STRING};
 sub concat_ws {
 	shift;
 	my ($sep, @args) = @_;
@@ -1914,69 +2145,67 @@ sub coalesce {
 }
 
 # LOAD_FILE
-$dfuncs{'load_file'} = {s=>\&load_file};
+$dfuncs{'load_file'} = {s=>\&load_file, c=>CMP_STRING};
 sub load_file {
 	require FileHandle;
 	my $fh = FileHandle->new($_[1]) or return undef;
 	return join('', <$fh>);
 }
 
-#-------------------------------------------------------------------
+#------------------------------------------------------------------------------
 # mathematical functions
 # 
 
 # ORD, OCT, HEX, ABS, SIGN
-$dfuncs{'ord'} = {s=>sub{ord $_[1]}};
-$dfuncs{'oct'} = {s=>sub{oct $_[1]}};
-$dfuncs{'hex'} = {s=>sub{hex $_[1]}};
-$dfuncs{'abs'} = {s=>sub{abs $_[1]}, args=>ARG_NUMERIC};
-$dfuncs{'sign'} = {s=>sub{$_[1] or return 0;($_[1] > 0) ? 1 : -1;}, args=>ARG_NUMERIC};
+$dfuncs{'ord'} = {s=>sub{ord $_[1]}, c=>CMP_NUMBER};
+$dfuncs{'oct'} = {s=>sub{oct $_[1]}, c=>CMP_NUMBER};
+$dfuncs{'hex'} = {s=>sub{hex $_[1]}, c=>CMP_NUMBER};
+$dfuncs{'abs'} = {s=>sub{abs $_[1]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
+$dfuncs{'sign'} = {s=>sub{$_[1] or return 0;($_[1] > 0) ? 1 : -1;}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
 
 # MOD
-$dfuncs{'mod'} = {s=>sub{$_[1] % $_[2]}};
+$dfuncs{'mod'} = {s=>sub{$_[1] % $_[2]}, c=>CMP_NUMBER};
 
 # POW, POWER
-$dfuncs{'pow'} = $dfuncs{'power'} = {s=>sub{$_[1] ** $_[2]}};
+$dfuncs{'pow'} = $dfuncs{'power'} = {s=>sub{$_[1] ** $_[2]}, c=>CMP_NUMBER};
 
 # FLOOR
-$dfuncs{'floor'} = {s=>\&floor};
+$dfuncs{'floor'} = {s=>\&floor, c=>CMP_NUMBER};
 sub floor {
 	($_[1] >= 0) and return int($_[1]);
 	($_[1] =~ m|\.0*[1-9]|) ? int($_[1]-1) : $_[1];
 }
 
-
 # CEILING
-$dfuncs{'ceil'} = $dfuncs{'ceiling'} = {s=>\&ceil};
+$dfuncs{'ceil'} = $dfuncs{'ceiling'} = {s=>\&ceil, c=>CMP_NUMBER};
 sub ceil {
 	($_[1] <= 0) and return int($_[1]);
 	($_[1] =~ m|\.0*[1-9]|) ? int($_[1]+1) : $_[1];
 }
 
-
 # INT
-$dfuncs{'int'} = $dfuncs{'ceiling'} = {s=>sub{int($_[1])}};
+$dfuncs{'int'} = $dfuncs{'ceiling'} = {s=>sub{int($_[1])}, c=>CMP_NUMBER};
 
 
 # SQUARE, SQUARED
-$dfuncs{'square'} = $dfuncs{'squared'} = {s=>sub{$_[1] ** 2}};
+$dfuncs{'square'} = $dfuncs{'squared'} = {s=>sub{$_[1] ** 2}, c=>CMP_NUMBER};
 
 
 # unary minus
-$dfuncs{'-'} = {s=>sub{$_[1] * -1}, args=>ARG_NUMERIC};
+$dfuncs{'-'} = {s=>sub{$_[1] * -1}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
 
 # unary plus
 # this rather useless looking function allows us to
 # have expressions like this:  1/+2
-$dfuncs{'+'} = {s=>sub{$_[1]}, args=>ARG_NUMERIC};
+$dfuncs{'+'} = {s=>sub{$_[1]}, args=>ARG_NUMERIC, c=>CMP_NUMBER};
 
 # 
 # mathematical functions
-#-------------------------------------------------------------------
+#------------------------------------------------------------------------------
 
 
 # CHAR
-$dfuncs{'char'} = {s=>\&char};
+$dfuncs{'char'} = {s=>\&char, c=>CMP_STRING};
 sub char {
 	shift;
 	my(@rv);
@@ -1987,19 +2216,19 @@ sub char {
 
 
 # STRING MANIPULATION AND INFORMATION
-$dfuncs{'length'}  = {s=>sub{length $_[1]}};
-$dfuncs{'ltrim'}   = {s=>sub{$_[1] =~ s|\s+$||s;$_[1];}};
-$dfuncs{'rtrim'}   = {s=>sub{$_[1]=~s|^\s+||s;$_[1];}};
-$dfuncs{'left'}    = {s=>sub{substr($_[1],0,$_[2])}};
-$dfuncs{'right'}   = {s=>sub{reverse(substr(reverse($_[1]), 0, $_[2]))}};
-$dfuncs{'reverse'} = {s=>sub{reverse($_[1])}};
-$dfuncs{'space'}   = {s=>sub{' ' x $_[1]}};
-$dfuncs{'repeat'}  = {s=>sub{defined($_[1]) && defined($_[2]) or return(undef);$_[1] x $_[2]}};
-$dfuncs{'insert'}  = {s=>sub{substr($_[1], $_[2]-1, $_[3]) = $_[4];$_[1]}};
+$dfuncs{'length'}  = {s=>sub{length $_[1]}, c=>CMP_NUMBER};
+$dfuncs{'ltrim'}   = {s=>sub{$_[1] =~ s|\s+$||s;$_[1];}, c=>CMP_STRING};
+$dfuncs{'rtrim'}   = {s=>sub{$_[1]=~s|^\s+||s;$_[1];}, c=>CMP_STRING};
+$dfuncs{'left'}    = {s=>sub{substr($_[1],0,$_[2])}, c=>CMP_STRING};
+$dfuncs{'right'}   = {s=>sub{reverse(substr(reverse($_[1]), 0, $_[2]))}, c=>CMP_STRING};
+$dfuncs{'reverse'} = {s=>sub{reverse($_[1])}, c=>CMP_STRING};
+$dfuncs{'space'}   = {s=>sub{' ' x $_[1]}, c=>CMP_STRING};
+$dfuncs{'repeat'}  = {s=>sub{defined($_[1]) && defined($_[2]) or return(undef);$_[1] x $_[2]}, c=>CMP_STRING};
+$dfuncs{'insert'}  = {s=>sub{substr($_[1], $_[2]-1, $_[3]) = $_[4];$_[1]}, c=>CMP_STRING};
 
 
 # REPLACE
-$dfuncs{'replace'} = {s=>\&replace};
+$dfuncs{'replace'} = {s=>\&replace, c=>CMP_STRING};
 sub replace {
 	shift;
 	my ($str, $from, $to) = @_;
@@ -2010,31 +2239,29 @@ sub replace {
 
 # QUOTE
 # needs to be fixed, doesn't quote enough stuff
-# $dfuncs{'quote'} = {s=>sub{my($v)=@_;$v =~ s|'|\\'|gs;$v}};
+# $dfuncs{'quote'} = {s=>sub{my($v)=@_;$v =~ s|'|\\'|gs;$v}, c=>CMP_STRING};
 
 
 # SOUNDEX
 # this function returns shorter values than the 
 # MySql documentation, so this function may not work as expected
-$dfuncs{'soundex'} = {s=>sub{require Text::Soundex;Text::Soundex::soundex($_[1])}};
-
+$dfuncs{'soundex'} = {s=>sub{require Text::Soundex;Text::Soundex::soundex($_[1])}, c=>CMP_STRING};
 
 # STRCMP
-$dfuncs{'strcmp'} = $dfuncs{'cmp'} = {s=>sub{$_[1] cmp $_[2]}};
+$dfuncs{'strcmp'} = $dfuncs{'cmp'} = {s=>sub{$_[1] cmp $_[2]}, c=>CMP_NUMBER};
 
 # LOCATE and friends
-$dfuncs{'locate'} = $dfuncs{'position'} = {s=>\&locate};
+$dfuncs{'locate'} = $dfuncs{'position'} = {s=>\&locate, c=>CMP_NUMBER};
 $dfuncs{'instr'} = {s=>sub{locate(@_[2,1,3])}};
 sub locate {
 	$_[3] ||= 1;
 	index(lc($_[2]), lc($_[1]), $_[3]-1)+1;
 }
 
-
 # CRUNCH
 # remove leading and trailing spaces, 
 # reduce internal contigous spaces to single spaces
-$dfuncs{'crunch'} = {s=>\&crunch};
+$dfuncs{'crunch'} = {s=>\&crunch, c=>CMP_STRING};
 sub crunch {
 	my $rv = $_[1];
 	$rv =~ s|^\s+||s;
@@ -2043,10 +2270,9 @@ sub crunch {
 	$rv;
 }
 
-
 # TRIM
 # syntax: TRIM([[BOTH | LEADING | TRAILING] [remstr] FROM] str) 
-$dfuncs{'trim'} = {s=>\&trim, args=>ARG_RAW};
+$dfuncs{'trim'} = {s=>\&trim, args=>ARG_RAW, c=>CMP_STRING};
 sub trim {
 	shift;
 	my ($opts, @args) = @_;
@@ -2096,7 +2322,7 @@ sub trim {
 
 
 # LPAD
-$dfuncs{'lpad'} = {s=>\&lpad};
+$dfuncs{'lpad'} = {s=>\&lpad, c=>CMP_STRING};
 sub lpad {
 	shift;
 	my @str = split('', shift);
@@ -2114,7 +2340,7 @@ sub lpad {
 
 
 # RPAD
-$dfuncs{'rpad'} = {s=>\&rpad};
+$dfuncs{'rpad'} = {s=>\&rpad, c=>CMP_STRING};
 sub rpad {
 	shift;
 	my @str = split('', shift);
@@ -2135,7 +2361,7 @@ sub rpad {
 $dfuncs{'substring'} =
 	$dfuncs{'mid'} =
 	$dfuncs{'substr'} =
-	{s=>\&substring, args=>ARG_RAW};
+	{s=>\&substring, args=>ARG_RAW, c=>CMP_STRING};
 sub substring {
 	my ($opts, @args) = @_;
 	my ($str, $pos, $len) = arr_split([',', 'from', 'for'], @args);
@@ -2152,7 +2378,7 @@ sub substring {
 
 
 # SUBSTRING_INDEX
-$dfuncs{'substring_index'} = {s=>\&substring_index};
+$dfuncs{'substring_index'} = {s=>\&substring_index, c=>CMP_STRING};
 sub substring_index {
 	shift;
 	my ($str, $del, $count) = @_;
@@ -2177,7 +2403,7 @@ sub substring_index {
 
 
 # ELT
-$dfuncs{'elt'} = {s=>\&elt};
+$dfuncs{'elt'} = {s=>\&elt, c=>CMP_AGNOSTIC};
 sub elt {
 	shift;
 	my $val=shift;
@@ -2185,7 +2411,7 @@ sub elt {
 }
 
 # FIELD
-$dfuncs{'field'} = {s=>\&field};
+$dfuncs{'field'} = {s=>\&field, c=>CMP_AGNOSTIC};
 sub field {
 	shift;
 	my $val=lc(shift);
@@ -2202,7 +2428,7 @@ sub field {
 
 # 
 # SQL::YASP::Expr
-#########################################################################################
+###############################################################################
 
 
 # return true;
@@ -2215,6 +2441,10 @@ __END__
 
 SQL::YASP - SQL parser and evaluater
 
+=head1 NO LONGER BEING DEVELOPED
+
+SQL::YASP is no longer being developed. That being said, I still think it's a
+pretty cool module, so I hope you'll look through it for anything you might need.
 
 =head1 SYNOPSIS
 
@@ -3232,10 +3462,10 @@ Logical and.  Identical to &&.
 
 =head2 BETWEEN
 
-Syntax: number_A BETWEEN number_B AND number_C
+Syntax: I<NumberA> BETWEEN I<NumberB> AND I<NumberC>
 
-Returns true if the number_A is greater than or equal to number_B and is also
-less than or equal to number_C.
+Returns true if the NumberA is greater than or equal to NumberB and is also
+less than or equal to NumberC.
 
     1 between -3 and 10
 
@@ -3543,6 +3773,12 @@ Initial release
 
 Removed Debug::ShowStuff from module, which was only
 there for (as you might expect) debugging.
+
+=item Version 0.12    January 2, 2015
+
+Cleaned up test.pl. Noting that this module is no longer being developed.
+Noting some prerequisites. Changed CR's to Unix style. Changed encoding to
+UTF-8.
 
 =back
 
